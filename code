@@ -1,0 +1,101 @@
+#include <Wire.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+
+MAX30105 particleSensor;
+
+const byte RATE_SIZE = 4;
+byte rates[RATE_SIZE];
+byte rateSpot = 0;
+long lastBeat = 0;
+
+float beatsPerMinute;
+int beatAvg;
+long startTime; // Variable to store start time
+
+int finalAvgs[2]; // Array to store the final averages
+int runCount = 0; // Counter for the number of runs
+bool waitingForFinger = false; // Flag to indicate waiting for finger re-touch
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Initializing...");
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("MAX30105 was not found. Please check wiring/power.");
+    while (1);
+  }
+  Serial.println("Place your index finger on the sensor with steady pressure.");
+
+  particleSensor.setup();
+  particleSensor.setPulseAmplitudeRed(0x0A);
+  particleSensor.setPulseAmplitudeGreen(0);
+
+  startTime = millis(); // Store the start time
+}
+
+void loop() {
+  long irValue = particleSensor.getIR();
+
+  if (waitingForFinger) {
+    if (irValue > 50000) { // Finger detected
+      waitingForFinger = false;
+      startTime = millis(); // Reset the start time for the next run
+      rateSpot = 0;
+      memset(rates, 0, sizeof(rates)); // Reset rates array
+      Serial.println("Finger detected, starting second run...");
+    }
+    return; // Skip the rest of the loop while waiting for finger
+  }
+
+  if (millis() - startTime > 10000) { // Check if 10 seconds have passed
+    // Calculate final average
+    int finalAvg = 0;
+    int count = 0;
+    for (byte x = 0; x < RATE_SIZE; x++) {
+      if (rates[x] != 0) { // Only include non-zero readings
+        finalAvg += rates[x];
+        count++;
+      }
+    }
+    if (count != 0) finalAvg /= count;
+
+    Serial.print("Final Avg BPM= ");
+    Serial.println(finalAvg);
+
+    finalAvgs[runCount] = finalAvg; // Store the final average
+    runCount++;
+
+    if (runCount == 2) {
+      // Calculate and display percentage difference
+      float percentageDiff = (float)abs(finalAvgs[0] - finalAvgs[1]) / ((finalAvgs[0] + finalAvgs[1]) / 2.0) * 100.0;
+      Serial.print("Percentage Difference: ");
+      Serial.print(percentageDiff);
+      Serial.println("%");
+      while (1); // Stop the loop
+    } else {
+      waitingForFinger = true; // Wait for finger removal and re-touch
+      Serial.println("Please remove and re-touch your finger to start the second run.");
+    }
+  }
+
+  if (checkForBeat(irValue) == true) {
+    long delta = millis() - lastBeat;
+    lastBeat = millis();
+
+    beatsPerMinute = 60 / (delta / 1000.0);
+
+    if (beatsPerMinute < 255 && beatsPerMinute > 20) {
+      rates[rateSpot++] = (byte)beatsPerMinute;
+      rateSpot %= RATE_SIZE;
+    }
+  }
+
+  Serial.print(", BPM=");
+  Serial.print(beatsPerMinute);
+  
+  if (irValue < 50000)
+    Serial.print(" No finger?");
+
+  Serial.println();
+}
